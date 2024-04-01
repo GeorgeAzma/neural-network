@@ -98,16 +98,31 @@ impl<T: Slice<f32>, S: Slice<usize>> Tensor<T, S> {
         self.data.as_slice().iter()
     }
 
+    pub fn data(&self) -> &[f32] {
+        self.data.as_slice()
+    }
+
     pub fn matmul<T2: Slice<f32>, S2: Slice<usize>>(&self, other: &Tensor<T2, S2>) -> Tensor {
-        let s1 = self.shape.as_slice();
-        let s2 = other.shape.as_slice();
-        if s1.len() == 0 || s2.len() == 0 {
-            return Tensor::default();
-        }
-        let dim0 = if s1.len() == 1 { 1 } else { s1[s1.len() - 2] };
-        let dim1 = s1[s1.len() - 1];
-        let other_dim0 = if s2.len() == 1 { 1 } else { s2[s2.len() - 2] };
-        let other_dim1 = s2[s2.len() - 1];
+        assert!(
+            self.dim() <= 2 && other.dim() <= 2,
+            "cannot multiply matrices with more than 2 dimensions"
+        );
+        assert!(
+            self.dim() != 0 && other.dim() != 0,
+            "cannot multiply matrices with zero dimensions"
+        );
+        let dim0 = if self.dim() == 1 {
+            1
+        } else {
+            self.size(self.dim() - 2)
+        };
+        let dim1 = self.size(self.dim() - 1);
+        let other_dim0 = if other.dim() == 1 {
+            1
+        } else {
+            other.size(other.dim() - 2)
+        };
+        let other_dim1 = other.size(other.dim() - 1);
         assert!(
             dim1 == other_dim0,
             "cannot multiply matrices with incompatible shapes ({}x{}) * ({}x{})",
@@ -116,16 +131,43 @@ impl<T: Slice<f32>, S: Slice<usize>> Tensor<T, S> {
             other_dim0,
             other_dim1,
         );
+
+        // Standard
+        // let mut result = Tensor::zeros(&[dim0, other_dim1]);
+        // for i in 0..dim0 {
+        //     for j in 0..dim1 {
+        //         for k in 0..other_dim1 {
+        //             result.data[i * dim0 + k] += self.data.as_slice()[i * dim1 + j]
+        //                 * other.data.as_slice()[j * other_dim1 + k];
+        //         }
+        //     }
+        // }
+        // result
+
+        // SIMD
+        use std::simd::prelude::*;
+        const LANES: usize = 8;
+        type Simdf32 = Simd<f32, LANES>;
         let mut result = Tensor::zeros(&[dim0, other_dim1]);
+        let simd_dim = other_dim1 / LANES * LANES;
         for i in 0..dim0 {
-            for j in 0..other_dim1 {
-                for k in 0..dim1 {
-                    result.data[i * dim0 + j] += self.data.as_slice()[i * dim1 + k]
-                        * other.data.as_slice()[k * other_dim1 + j];
+            for j in 0..dim1 {
+                let a = Simdf32::splat(self.data.as_slice()[i * dim1 + j]);
+                for k in (0..simd_dim).step_by(LANES) {
+                    let slc = &mut result.data[i * dim0 + k..];
+                    let res = a * Simdf32::from_slice(&other.data.as_slice()[j * other_dim1 + k..])
+                        + Simdf32::from_slice(slc);
+                    res.copy_to_slice(slc);
+                }
+                for k in simd_dim..other_dim1 {
+                    result.data[i * dim0 + k] += self.data.as_slice()[i * dim1 + j]
+                        * other.data.as_slice()[j * other_dim1 + k];
                 }
             }
         }
         result
+
+        // crate::gpu::matmul(self, other)
     }
 
     pub fn outer<T2: Slice<f32>, S2: Slice<usize>>(&self, other: &Tensor<T2, S2>) -> Tensor {
@@ -342,13 +384,15 @@ impl Tensor<&mut [f32], &mut [usize]> {
 
 impl Tensor {
     pub fn new(data: &[f32], shape: &[usize]) -> Self {
-        Self {
-            data: data.to_vec(),
-            shape: shape.to_vec(),
-        }
+        Self::raw(data.to_vec(), shape.to_vec())
     }
 
     pub fn raw(data: Vec<f32>, shape: Vec<usize>) -> Self {
+        assert_eq!(
+            data.len(),
+            shape.iter().product(),
+            "data and shape mismatch"
+        );
         Self { data, shape }
     }
 
@@ -433,6 +477,10 @@ impl Tensor {
             data: vec![fill_value; shape.iter().product()],
             shape: shape.to_vec(),
         }
+    }
+
+    pub fn splat(shape: &[usize], fill_value: f32) -> Self {
+        Self::full(shape, fill_value)
     }
 
     pub fn iter_mut(&mut self) -> std::slice::IterMut<f32> {
@@ -617,6 +665,70 @@ impl Tensor {
         );
         self.data.copy_from_slice(data);
     }
+
+    pub fn mul_<T: Slice<f32>, S: Slice<usize>>(&mut self, other: &Tensor<T, S>) {
+        assert_eq!(
+            self.shape.as_slice(),
+            other.shape.as_slice(),
+            "cannot multiply tensors with different shapes"
+        );
+        self.data
+            .iter_mut()
+            .zip(other.data.as_slice().iter())
+            .for_each(|(a, b)| *a *= b);
+    }
+
+    pub fn div_<T: Slice<f32>, S: Slice<usize>>(&mut self, other: &Tensor<T, S>) {
+        assert_eq!(
+            self.shape.as_slice(),
+            other.shape.as_slice(),
+            "cannot divide tensors with different shapes"
+        );
+        self.data
+            .iter_mut()
+            .zip(other.data.as_slice().iter())
+            .for_each(|(a, b)| *a /= b);
+    }
+
+    pub fn add_<T: Slice<f32>, S: Slice<usize>>(&mut self, other: &Tensor<T, S>) {
+        assert_eq!(
+            self.shape.as_slice(),
+            other.shape.as_slice(),
+            "cannot add tensors with different shapes"
+        );
+        self.data
+            .iter_mut()
+            .zip(other.data.as_slice().iter())
+            .for_each(|(a, b)| *a += b);
+    }
+
+    pub fn sub_<T: Slice<f32>, S: Slice<usize>>(&mut self, other: &Tensor<T, S>) {
+        assert_eq!(
+            self.shape.as_slice(),
+            other.shape.as_slice(),
+            "cannot subtract tensors with different shapes"
+        );
+        self.data
+            .iter_mut()
+            .zip(other.data.as_slice().iter())
+            .for_each(|(a, b)| *a -= b);
+    }
+
+    pub fn mul_scalar_(&mut self, scalar: f32) {
+        self.data.iter_mut().for_each(|x| *x *= scalar);
+    }
+
+    pub fn div_scalar_(&mut self, scalar: f32) {
+        self.data.iter_mut().for_each(|x| *x /= scalar);
+    }
+
+    pub fn add_scalar_(&mut self, scalar: f32) {
+        self.data.iter_mut().for_each(|x| *x += scalar);
+    }
+
+    pub fn sub_scalar_(&mut self, scalar: f32) {
+        self.data.iter_mut().for_each(|x| *x -= scalar);
+    }
 }
 
 impl Tensor<&mut [f32], &mut [usize]> {
@@ -645,6 +757,70 @@ impl Tensor<&mut [f32], &mut [usize]> {
             "data must have the same number of elements as the tensor"
         );
         self.data.copy_from_slice(data);
+    }
+
+    pub fn mul_<T: Slice<f32>, S: Slice<usize>>(&mut self, other: &Tensor<T, S>) {
+        assert_eq!(
+            self.shape.as_slice(),
+            other.shape.as_slice(),
+            "cannot multiply tensors with different shapes"
+        );
+        self.data
+            .iter_mut()
+            .zip(other.data.as_slice().iter())
+            .for_each(|(a, b)| *a *= b);
+    }
+
+    pub fn div_<T: Slice<f32>, S: Slice<usize>>(&mut self, other: &Tensor<T, S>) {
+        assert_eq!(
+            self.shape.as_slice(),
+            other.shape.as_slice(),
+            "cannot divide tensors with different shapes"
+        );
+        self.data
+            .iter_mut()
+            .zip(other.data.as_slice().iter())
+            .for_each(|(a, b)| *a /= b);
+    }
+
+    pub fn add_<T: Slice<f32>, S: Slice<usize>>(&mut self, other: &Tensor<T, S>) {
+        assert_eq!(
+            self.shape.as_slice(),
+            other.shape.as_slice(),
+            "cannot add tensors with different shapes"
+        );
+        self.data
+            .iter_mut()
+            .zip(other.data.as_slice().iter())
+            .for_each(|(a, b)| *a += b);
+    }
+
+    pub fn sub_<T: Slice<f32>, S: Slice<usize>>(&mut self, other: &Tensor<T, S>) {
+        assert_eq!(
+            self.shape.as_slice(),
+            other.shape.as_slice(),
+            "cannot subtract tensors with different shapes"
+        );
+        self.data
+            .iter_mut()
+            .zip(other.data.as_slice().iter())
+            .for_each(|(a, b)| *a -= b);
+    }
+
+    pub fn mul_scalar_(&mut self, scalar: f32) {
+        self.data.iter_mut().for_each(|x| *x *= scalar);
+    }
+
+    pub fn div_scalar_(&mut self, scalar: f32) {
+        self.data.iter_mut().for_each(|x| *x /= scalar);
+    }
+
+    pub fn add_scalar_(&mut self, scalar: f32) {
+        self.data.iter_mut().for_each(|x| *x += scalar);
+    }
+
+    pub fn sub_scalar_(&mut self, scalar: f32) {
+        self.data.iter_mut().for_each(|x| *x -= scalar);
     }
 }
 
@@ -734,15 +910,8 @@ where
     type Output = Tensor;
 
     fn mul(self, other: &Tensor<T2, S2>) -> Self::Output {
-        assert_eq!(
-            self.shape.as_slice(),
-            other.shape.as_slice(),
-            "cannot multiply tensors with different shapes"
-        );
-        let mut result = Tensor::zeros(&[self.numel()]);
-        for i in 0..self.numel() {
-            result.data[i] = self.data.as_slice()[i] * other.data.as_slice()[i];
-        }
+        let mut result = self.to_owned();
+        result.mul_(other);
         result
     }
 }
@@ -757,16 +926,9 @@ where
     type Output = Tensor;
 
     fn div(self, other: &Tensor<T2, S2>) -> Self::Output {
-        let other = Tensor {
-            data: other
-                .data
-                .as_slice()
-                .iter()
-                .map(|x| 1.0 / x)
-                .collect::<Vec<f32>>(),
-            shape: other.shape.as_slice().to_vec(),
-        };
-        self * &other
+        let mut result = self.to_owned();
+        result.div_(other);
+        result
     }
 }
 
@@ -780,21 +942,9 @@ where
     type Output = Tensor;
 
     fn add(self, other: &Tensor<T2, S2>) -> Self::Output {
-        assert_eq!(
-            self.shape.as_slice(),
-            other.shape.as_slice(),
-            "cannot add tensors with different shapes"
-        );
-        Tensor {
-            data: self
-                .data
-                .as_slice()
-                .iter()
-                .zip(other.data.as_slice().iter())
-                .map(|(a, b)| a + b)
-                .collect(),
-            shape: self.shape.as_slice().to_vec(),
-        }
+        let mut result = self.to_owned();
+        result.add_(other);
+        result
     }
 }
 
@@ -808,21 +958,9 @@ where
     type Output = Tensor;
 
     fn sub(self, other: &Tensor<T2, S2>) -> Self::Output {
-        assert_eq!(
-            self.shape.as_slice(),
-            other.shape.as_slice(),
-            "cannot subtract tensors with different shapes"
-        );
-        Tensor {
-            data: self
-                .data
-                .as_slice()
-                .iter()
-                .zip(other.data.as_slice().iter())
-                .map(|(a, b)| a - b)
-                .collect(),
-            shape: self.shape.as_slice().to_vec(),
-        }
+        let mut result = self.to_owned();
+        result.sub_(other);
+        result
     }
 }
 
@@ -830,10 +968,9 @@ impl<T: Slice<f32>, S: Slice<usize>> ops::Mul<f32> for &Tensor<T, S> {
     type Output = Tensor;
 
     fn mul(self, scalar: f32) -> Self::Output {
-        Tensor {
-            data: self.data.as_slice().iter().map(|x| x * scalar).collect(),
-            shape: self.shape.as_slice().to_vec(),
-        }
+        let mut result = self.to_owned();
+        result.mul_scalar_(scalar);
+        result
     }
 }
 
@@ -841,10 +978,9 @@ impl<T: Slice<f32>, S: Slice<usize>> ops::Div<f32> for &Tensor<T, S> {
     type Output = Tensor;
 
     fn div(self, scalar: f32) -> Self::Output {
-        Tensor {
-            data: self.data.as_slice().iter().map(|x| x / scalar).collect(),
-            shape: self.shape.as_slice().to_vec(),
-        }
+        let mut result = self.to_owned();
+        result.div_scalar_(scalar);
+        result
     }
 }
 
@@ -852,10 +988,9 @@ impl<T: Slice<f32>, S: Slice<usize>> ops::Add<f32> for &Tensor<T, S> {
     type Output = Tensor;
 
     fn add(self, scalar: f32) -> Self::Output {
-        Tensor {
-            data: self.data.as_slice().iter().map(|x| x + scalar).collect(),
-            shape: self.shape.as_slice().to_vec(),
-        }
+        let mut result = self.to_owned();
+        result.add_scalar_(scalar);
+        result
     }
 }
 
@@ -863,10 +998,9 @@ impl<T: Slice<f32>, S: Slice<usize>> ops::Sub<f32> for &Tensor<T, S> {
     type Output = Tensor;
 
     fn sub(self, scalar: f32) -> Self::Output {
-        Tensor {
-            data: self.data.as_slice().iter().map(|x| x - scalar).collect(),
-            shape: self.shape.as_slice().to_vec(),
-        }
+        let mut result = self.to_owned();
+        result.sub_scalar_(scalar);
+        result
     }
 }
 
@@ -918,105 +1052,73 @@ impl<T: Slice<f32>, S: Slice<usize>> ops::Neg for &Tensor<T, S> {
 
 impl ops::AddAssign<f32> for Tensor {
     fn add_assign(&mut self, scalar: f32) {
-        self.data.iter_mut().for_each(|x| *x += scalar);
+        self.add_scalar_(scalar);
     }
 }
 
 impl ops::SubAssign<f32> for Tensor {
     fn sub_assign(&mut self, scalar: f32) {
-        self.data.iter_mut().for_each(|x| *x -= scalar);
+        self.sub_scalar_(scalar);
     }
 }
 
 impl ops::MulAssign<f32> for Tensor {
     fn mul_assign(&mut self, scalar: f32) {
-        self.data.iter_mut().for_each(|x| *x *= scalar);
+        self.mul_scalar_(scalar);
     }
 }
 
 impl ops::DivAssign<f32> for Tensor {
     fn div_assign(&mut self, scalar: f32) {
-        self.data.iter_mut().for_each(|x| *x /= scalar);
+        self.div_scalar_(scalar);
     }
 }
 
 impl ops::AddAssign<f32> for Tensor<&mut [f32], &mut [usize]> {
     fn add_assign(&mut self, scalar: f32) {
-        self.data.iter_mut().for_each(|x| *x += scalar);
+        self.add_scalar_(scalar);
     }
 }
 
 impl ops::SubAssign<f32> for Tensor<&mut [f32], &mut [usize]> {
     fn sub_assign(&mut self, scalar: f32) {
-        self.data.iter_mut().for_each(|x| *x -= scalar);
+        self.sub_scalar_(scalar);
     }
 }
 
 impl ops::MulAssign<f32> for Tensor<&mut [f32], &mut [usize]> {
     fn mul_assign(&mut self, scalar: f32) {
-        self.data.iter_mut().for_each(|x| *x *= scalar);
+        self.mul_scalar_(scalar);
     }
 }
 
 impl ops::DivAssign<f32> for Tensor<&mut [f32], &mut [usize]> {
     fn div_assign(&mut self, scalar: f32) {
-        self.data.iter_mut().for_each(|x| *x /= scalar);
+        self.div_scalar_(scalar);
     }
 }
 
 impl<T: Slice<f32>, S: Slice<usize>> ops::AddAssign<&Tensor<T, S>> for Tensor {
     fn add_assign(&mut self, other: &Tensor<T, S>) {
-        assert_eq!(
-            self.shape,
-            other.shape.as_slice(),
-            "cannot add tensors with different shapes"
-        );
-        self.data
-            .iter_mut()
-            .zip(other.data.as_slice().iter())
-            .for_each(|(a, b)| *a += b);
+        self.add_(other);
     }
 }
 
 impl<T: Slice<f32>, S: Slice<usize>> ops::SubAssign<&Tensor<T, S>> for Tensor {
     fn sub_assign(&mut self, other: &Tensor<T, S>) {
-        assert_eq!(
-            self.shape,
-            other.shape.as_slice(),
-            "cannot subtract tensors with different shapes"
-        );
-        self.data
-            .iter_mut()
-            .zip(other.data.as_slice().iter())
-            .for_each(|(a, b)| *a -= b);
+        self.sub_(other);
     }
 }
 
 impl<T: Slice<f32>, S: Slice<usize>> ops::MulAssign<&Tensor<T, S>> for Tensor {
     fn mul_assign(&mut self, other: &Tensor<T, S>) {
-        assert_eq!(
-            self.shape,
-            other.shape.as_slice(),
-            "cannot multiply tensors with different shapes"
-        );
-        self.data
-            .iter_mut()
-            .zip(other.data.as_slice().iter())
-            .for_each(|(a, b)| *a *= b);
+        self.mul_(other);
     }
 }
 
 impl<T: Slice<f32>, S: Slice<usize>> ops::DivAssign<&Tensor<T, S>> for Tensor {
     fn div_assign(&mut self, other: &Tensor<T, S>) {
-        assert_eq!(
-            self.shape,
-            other.shape.as_slice(),
-            "cannot divide tensors with different shapes"
-        );
-        self.data
-            .iter_mut()
-            .zip(other.data.as_slice().iter())
-            .for_each(|(a, b)| *a /= b);
+        self.div_(other);
     }
 }
 
@@ -1024,15 +1126,7 @@ impl<T: Slice<f32>, S: Slice<usize>> ops::AddAssign<&Tensor<T, S>>
     for Tensor<&mut [f32], &mut [usize]>
 {
     fn add_assign(&mut self, other: &Tensor<T, S>) {
-        assert_eq!(
-            self.shape,
-            other.shape.as_slice(),
-            "cannot add tensors with different shapes"
-        );
-        self.data
-            .iter_mut()
-            .zip(other.data.as_slice().iter())
-            .for_each(|(a, b)| *a += b);
+        self.add_(other);
     }
 }
 
@@ -1040,15 +1134,7 @@ impl<T: Slice<f32>, S: Slice<usize>> ops::SubAssign<&Tensor<T, S>>
     for Tensor<&mut [f32], &mut [usize]>
 {
     fn sub_assign(&mut self, other: &Tensor<T, S>) {
-        assert_eq!(
-            self.shape,
-            other.shape.as_slice(),
-            "cannot subtract tensors with different shapes"
-        );
-        self.data
-            .iter_mut()
-            .zip(other.data.as_slice().iter())
-            .for_each(|(a, b)| *a -= b);
+        self.sub_(other);
     }
 }
 
@@ -1056,15 +1142,7 @@ impl<T: Slice<f32>, S: Slice<usize>> ops::MulAssign<&Tensor<T, S>>
     for Tensor<&mut [f32], &mut [usize]>
 {
     fn mul_assign(&mut self, other: &Tensor<T, S>) {
-        assert_eq!(
-            self.shape,
-            other.shape.as_slice(),
-            "cannot multiply tensors with different shapes"
-        );
-        self.data
-            .iter_mut()
-            .zip(other.data.as_slice().iter())
-            .for_each(|(a, b)| *a *= b);
+        self.mul_(other);
     }
 }
 
@@ -1072,15 +1150,7 @@ impl<T: Slice<f32>, S: Slice<usize>> ops::DivAssign<&Tensor<T, S>>
     for Tensor<&mut [f32], &mut [usize]>
 {
     fn div_assign(&mut self, other: &Tensor<T, S>) {
-        assert_eq!(
-            self.shape,
-            other.shape.as_slice(),
-            "cannot divide tensors with different shapes"
-        );
-        self.data
-            .iter_mut()
-            .zip(other.data.as_slice().iter())
-            .for_each(|(a, b)| *a /= b);
+        self.div_(other);
     }
 }
 
