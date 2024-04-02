@@ -112,22 +112,91 @@ impl Layer for Relu {
 }
 
 pub struct Lrelu {
-    alpha: f32,
+    pub a: f32,
 }
 
 impl Lrelu {
     pub fn new(alpha: f32) -> Self {
-        Self { alpha }
+        Self { a: alpha }
     }
 }
 
 impl Layer for Lrelu {
     fn forward(&self, inputs: &TensorRef) -> Tensor {
-        inputs.apply(|x| if x >= 0.0 { x } else { x * self.alpha })
+        inputs.apply(|x| if x >= 0.0 { x } else { x * self.a })
     }
 
     fn backward(&self, gradient: &TensorRef, output: &TensorRef) -> Tensor {
-        gradient * &output.apply(|x| if x >= 0.0 { 1.0 } else { self.alpha })
+        gradient * &output.apply(|x| if x >= 0.0 { 1.0 } else { self.a })
+    }
+}
+
+pub struct Sigmoid {}
+
+impl Layer for Sigmoid {
+    fn forward(&self, inputs: &TensorRef) -> Tensor {
+        inputs.apply(|x| 1.0 / (1.0 + (-x).exp()))
+    }
+
+    fn backward(&self, gradient: &TensorRef, output: &TensorRef) -> Tensor {
+        gradient
+            * &output.apply(|x| {
+                let x = 1.0 / (1.0 + (-x).exp());
+                x * (1.0 - x)
+            })
+    }
+}
+
+pub struct Tanh {}
+
+impl Layer for Tanh {
+    fn forward(&self, inputs: &TensorRef) -> Tensor {
+        inputs.apply(|x| x.tanh())
+    }
+
+    fn backward(&self, gradient: &TensorRef, output: &TensorRef) -> Tensor {
+        gradient * &output.apply(|x| 1.0 - x.tanh() * x.tanh())
+    }
+}
+
+pub struct Step {}
+
+impl Layer for Step {
+    fn forward(&self, inputs: &TensorRef) -> Tensor {
+        inputs.apply(|x| x.signum())
+    }
+
+    fn backward(&self, gradient: &TensorRef, output: &TensorRef) -> Tensor {
+        gradient * &output.apply(|_| 1.0)
+    }
+}
+
+pub struct Softplus {}
+
+impl Layer for Softplus {
+    fn forward(&self, inputs: &TensorRef) -> Tensor {
+        inputs.apply(|x| (1.0 + x.exp()).ln())
+    }
+
+    fn backward(&self, gradient: &TensorRef, output: &TensorRef) -> Tensor {
+        gradient * &output.apply(|x| 1.0 / (1.0 + (-x).exp()))
+    }
+}
+
+pub struct Gelu {}
+
+impl Layer for Gelu {
+    fn forward(&self, inputs: &TensorRef) -> Tensor {
+        inputs.apply(|x| 0.5 * x * (1.0 + ((0.8 + 0.03 * x * x) * x).tanh()))
+    }
+
+    fn backward(&self, gradient: &TensorRef, output: &TensorRef) -> Tensor {
+        gradient
+            * &output.apply(|x| {
+                let a = x * (0.035 * x * x + 0.8);
+                let cosh_a = a.cosh();
+                0.5 * a.tanh() + 0.5 + x * (0.05 * x * x + 0.4) / (cosh_a * cosh_a)
+            })
     }
 }
 
@@ -141,5 +210,17 @@ impl Layer for Softmax {
     fn backward(&self, gradient: &TensorRef, _output: &TensorRef) -> Tensor {
         // TODO: using actual softmax derivative had bad results
         gradient.to_owned()
+    }
+}
+
+pub struct Atan {}
+
+impl Layer for Atan {
+    fn forward(&self, inputs: &TensorRef) -> Tensor {
+        inputs.apply(|x| x.atan())
+    }
+
+    fn backward(&self, gradient: &TensorRef, output: &TensorRef) -> Tensor {
+        gradient * &output.apply(|x| 1.0 / (x.atan().powi(2) + 1.0))
     }
 }

@@ -54,10 +54,10 @@ impl Model {
         inputs
     }
 
-    pub fn step<T: Slice<f32>, S: Slice<usize>>(
+    pub fn step<T1: Slice<f32>, S1: Slice<usize>, T2: Slice<f32>, S2: Slice<usize>>(
         &mut self,
-        inputs: &Tensor<T, S>,
-        targets: &Tensor<T, S>,
+        inputs: &Tensor<T1, S1>,
+        targets: &Tensor<T2, S2>,
     ) -> Tensor {
         let mut outputs = Vec::new();
         outputs.resize(self.layers.len(), Tensor::default());
@@ -93,7 +93,6 @@ impl Model {
                 }
                 self.delta_weights[i] += &input.outer(&gradient);
                 self.delta_biases[i] += &gradient;
-                // dbg!(&self.delta_weights[i]);
             }
             if i != 0 {
                 gradient = layer.backward(&gradient.as_ref(), &outputs[i].as_ref());
