@@ -4,11 +4,8 @@ pub mod rand;
 pub mod tensor;
 use std::time::Instant;
 
-pub use tensor::Slice;
 pub use tensor::Tensor;
-pub use tensor::TensorRef;
 pub mod nn;
-pub mod seed;
 pub use nn::*;
 pub mod layer;
 pub use layer::*;
@@ -16,58 +13,45 @@ pub mod data;
 pub use data::*;
 
 fn main() {
-    let (mut inputs, mut targets) = load_mnist();
+    let learning_rate = 2e-4;
 
-    let learning_rate = 0.0005;
-    let mut rng = rand::new();
-    // let test_inputs = inputs.slice(inputs.size(0) - 32, 0);
-    // let test_targets = targets.slice(targets.size(0) - 32, 0);
-
-    let mut accuracy;
+    let mut dataset = load_mnist();
+    dataset.batch(32);
+    let (mut train, test) = dataset.split_train_test_size_unbatched(dataset.batches() - 1);
 
     let mut model = Model::new();
-    model.add_layer(Linear::new(inputs.size(1), 256));
-    model.add_layer(Relu {});
-    model.add_layer(Linear::output(targets.size(1)));
-    model.add_layer(Softmax {});
+    model.add_layer(Layer::lin(train.input_size(), 8));
+    model.add_layer(Layer::Gelu);
+    model.add_layer(Layer::lin_out(train.target_size()));
 
-    inputs.resize_(&[inputs.size(0) / 32 - 1, 32, inputs.size(1)]);
-    targets.resize_(&[targets.size(0) / 32 - 1, 32, targets.size(1)]);
-
-    for epoch in 0..16 {
-        let batches = 64;
-        let pos = rng.gen_range_u32(0..inputs.size(0) as u32 - batches as u32) as usize;
-        accuracy = 0.0;
+    for epoch in 0..8 {
+        let mut accuracy = 0.0;
         let time = Instant::now();
-        for idx in pos..pos + batches {
-            for batch_idx in 0..inputs.size(1) {
-                let x = inputs.at(&[idx, batch_idx]);
-                let y = targets.at(&[idx, batch_idx]);
+        train.shuffle(&mut rand::new());
+        for batch in train.iter() {
+            for (x, y) in batch.iter() {
                 let a2 = model.step(&x, &y);
-
-                accuracy += y[a2.argmax()];
-                if batch_idx == 0 && idx == pos + batches - 1 {
-                    print!("Epoch {}: {}", epoch, -a2[y.argmax()].max(1e-8).ln() as f32);
-                }
-            }
-            // Update
-            if idx == pos + batches - 1 {
-                accuracy /= (batches * inputs.size(1)) as f32;
-                print!(" ({:.3}%)", accuracy * 100.0);
+                accuracy += if y.argmax() == a2.argmax() { 1.0 } else { 0.0 };
             }
             model.update(learning_rate);
         }
-        let elapsed = Instant::now().duration_since(time);
-        println!("  {:.3}ms", elapsed.as_secs_f32() * 1000.0);
+
+        accuracy /= (train.batches() * train.batch_size()) as f32;
+        let elapsed = Instant::now().duration_since(time).as_secs_f32() * 1000.0;
+        println!(
+            "Epoch {}: ({:.3}%) | {:.3}ms",
+            epoch,
+            accuracy * 100.0,
+            elapsed
+        );
     }
 
-    // for i in 0..32 {
-    //     let x = test_inputs.idx(i);
-    //     let a2 = model.forward(&x);
-    //     println!(
-    //         "Guess: {} | Target: {}",
-    //         a2.argmax(),
-    //         test_targets.idx(i).argmax()
-    //     );
-    // }
+    let mut guesses = Vec::new();
+    let mut targets = Vec::new();
+    for (x, y) in test.iter() {
+        guesses.push(model.forward(&x).argmax());
+        targets.push(y.argmax());
+    }
+    println!("Guesses: {:?}", guesses);
+    println!("Targets: {:?}", targets);
 }
