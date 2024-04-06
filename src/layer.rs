@@ -151,7 +151,7 @@ impl Layer {
                 output: _,
                 weights,
                 ..
-            } => grad.matmul(&weights.t()).squeeze(),
+            } => grad.dot(&weights),
             Layer::Relu => grad * &out.apply(|x| if x >= 0.0 { 1.0 } else { 0.0 }),
             Layer::Lrelu { a } => grad * &out.apply(|x| if x >= 0.0 { 1.0 } else { *a }),
             Layer::Sigmoid => {

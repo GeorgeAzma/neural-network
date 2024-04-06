@@ -24,7 +24,7 @@ fn main() {
     model.add_layer(Layer::Gelu);
     model.add_layer(Layer::lin_out(train.target_size()));
 
-    for epoch in 0..8 {
+    for epoch in 0..32 {
         let mut accuracy = 0.0;
         let time = Instant::now();
         train.shuffle(&mut rand::new());

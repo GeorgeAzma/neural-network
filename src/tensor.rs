@@ -9,17 +9,21 @@ macro_rules! tensor {
     (x: literal) => {
         Tensor::array(&[x as f32])
     };
+
     ($x: literal; $n: literal) => {
         Tensor::splat(&[$n as usize], $x as f32)
     };
+
     ($value:expr; $($dim:expr),*) => {{
         let shape = vec![$($dim),*];
-        let data = vec![$value; shape.iter().product()];
+        let data = vec![$value; shape.iter().product::<usize>()];
         Tensor::raw(data, shape)
     }};
+
     [$($x: literal), *] => {
         Tensor::array(&[$($x as f32),*])
     };
+
     ($([$([$([$($x:expr),* $(,)*]),* $(,)*]),+ $(,)*]),+ $(,)*) => {{
         let data = vec![$([$([$([$($x,)*],)*],)*],)*];
         let dim0 = data.len();
@@ -29,6 +33,7 @@ macro_rules! tensor {
         let flattened_data: Vec<f32> = data.into_iter().flatten().flatten().flatten().map(|x| x as f32).collect();
         Tensor::raw(flattened_data, vec![dim0, dim1, dim2, dim3])
     }};
+
     ($([$([$($x:expr),* $(,)*]),+ $(,)*]),+ $(,)*) => {{
         let data = vec![$([$([$($x,)*],)*],)*];
         let dim0 = data.len();
@@ -36,77 +41,13 @@ macro_rules! tensor {
         let dim2 = if dim1 > 0 { data[0][0].len() } else { 0 };
         Tensor::raw(data.into_iter().flatten().flatten().map(|x| x as f32).collect(), vec![dim0, dim1, dim2])
     }};
+
     ($([$($x:expr),* $(,)*]),+ $(,)*) => {{
         let data = vec![$([$($x,)*],)*];
         let dim0 = data.len();
         let dim1 = if dim0 > 0 { data[0].len() } else { 0 };
         Tensor::raw(data.into_iter().flatten().map(|x| x as f32).collect(), vec![dim0, dim1])
     }};
-}
-
-pub trait Index {
-    fn start(&self) -> usize;
-    fn end(&self) -> usize;
-}
-
-impl Index for usize {
-    fn start(&self) -> usize {
-        *self
-    }
-
-    fn end(&self) -> usize {
-        self + 1
-    }
-}
-
-impl Index for std::ops::Range<usize> {
-    fn start(&self) -> usize {
-        self.start
-    }
-
-    fn end(&self) -> usize {
-        self.end
-    }
-}
-
-impl Index for std::ops::RangeFrom<usize> {
-    fn start(&self) -> usize {
-        self.start
-    }
-
-    fn end(&self) -> usize {
-        0
-    }
-}
-
-impl Index for std::ops::RangeFull {
-    fn start(&self) -> usize {
-        0
-    }
-
-    fn end(&self) -> usize {
-        0
-    }
-}
-
-impl Index for std::ops::RangeTo<usize> {
-    fn start(&self) -> usize {
-        0
-    }
-
-    fn end(&self) -> usize {
-        self.end
-    }
-}
-
-impl Index for std::ops::RangeToInclusive<usize> {
-    fn start(&self) -> usize {
-        0
-    }
-
-    fn end(&self) -> usize {
-        self.end + 1
-    }
 }
 
 #[derive(Clone, Default)]
@@ -130,7 +71,7 @@ impl Tensor {
     }
 
     pub fn deep_clone(&self) -> Self {
-        Self::raw((*self.data).to_vec(), self.shape.to_vec())
+        Self::raw(self.data.clone(), self.shape.clone())
     }
 
     pub fn array(data: &[f32]) -> Self {
@@ -176,7 +117,7 @@ impl Tensor {
 
     pub fn linspace(start: f32, end: f32, steps: usize) -> Self {
         let step = (end - start) / (steps - 1) as f32;
-        Self::arange(start, end, step)
+        Self::arange(start, end + step, step)
     }
 
     pub fn eye(n: usize, m: usize) -> Self {
@@ -218,13 +159,16 @@ impl Tensor {
         self.data.len()
     }
 
-    fn data_mut(&mut self) -> &mut Vec<f32> {
-        &mut self.data
-    }
-
     pub fn idx(&self, index: usize) -> Tensor {
         let m = self.numel() / self.size(0);
-        Self::new(&self[index * m..(index + 1) * m], &self.shape[1..])
+        Self::new(
+            &self[index * m..][..m],
+            if self.dim() == 1 {
+                &[1]
+            } else {
+                &self.shape[1..]
+            },
+        )
     }
 
     pub fn slice<I: RangeBounds<usize>>(&self, index: I) -> Tensor {
@@ -241,36 +185,37 @@ impl Tensor {
         };
         shape[0] = end - start;
         let m = self.numel() / self.size(0);
-        Self::new(&self[start * m..(start + shape[0]) * m], &shape)
+        Self::new(&self[start * m..][..shape[0] * m], &shape)
+    }
+
+    pub fn index(&self, index: &[usize]) -> usize {
+        let mut m = 1;
+        let mut idx = 0;
+        for (i, &indx) in index.iter().enumerate().rev() {
+            idx += indx * m;
+            m *= self.size(i);
+        }
+        idx
     }
 
     pub fn at(&self, index: &[usize]) -> Tensor {
-        let mut m = self.numel();
-        let mut idx = 0;
-        for (i, &indx) in index.iter().enumerate() {
-            m /= self.size(i);
-            idx += indx * m;
-        }
-        Tensor::new(&self[idx..idx + m], &self.shape[index.len()..])
+        let new_shape = if index.len() < self.dim() {
+            &self.shape[index.len()..]
+        } else {
+            &[1]
+        };
+        Tensor::new(
+            &self[self.index(index)..][..new_shape.iter().product()],
+            new_shape,
+        )
     }
 
-    pub fn elem(&self, index: &[usize]) -> f32 {
-        let mut m = self.numel();
-        let mut idx = 0;
-        for (i, &indx) in index.iter().enumerate() {
-            m /= self.size(i);
-            idx += indx * m;
-        }
-        self[idx]
+    pub fn get(&self, index: &[usize]) -> f32 {
+        self[self.index(index)]
     }
 
-    pub fn elem_mut(&mut self, index: &[usize]) -> &mut f32 {
-        let mut m = self.numel();
-        let mut idx = 0;
-        for &i in index {
-            m /= self.size(i);
-            idx += i * m;
-        }
+    pub fn get_mut(&mut self, index: &[usize]) -> &mut f32 {
+        let idx = self.index(index);
         &mut self[idx]
     }
 
@@ -280,89 +225,6 @@ impl Tensor {
 
     pub fn iter_mut(&mut self) -> std::slice::IterMut<f32> {
         self[..].iter_mut()
-    }
-
-    pub fn matmul(&self, other: &Tensor) -> Tensor {
-        assert!(
-            self.dim() <= 2 && other.dim() <= 2,
-            "cannot multiply matrices with more than 2 dimensions"
-        );
-        assert!(
-            self.dim() != 0 && other.dim() != 0,
-            "cannot multiply matrices with zero dimensions"
-        );
-        let dim0 = if self.dim() == 1 {
-            1
-        } else {
-            self.size(self.dim() - 2)
-        };
-        let dim1 = self.size(self.dim() - 1);
-        let other_dim0 = if other.dim() == 1 {
-            1
-        } else {
-            other.size(other.dim() - 2)
-        };
-        let other_dim1 = other.size(other.dim() - 1);
-        assert!(
-            dim1 == other_dim0,
-            "cannot multiply matrices with incompatible shapes ({}x{}) * ({}x{})",
-            dim0,
-            dim1,
-            other_dim0,
-            other_dim1,
-        );
-
-        let mut result = Tensor::zeros(&[dim0, other_dim1]);
-        for i in 0..dim0 {
-            for j in 0..dim1 {
-                result[i * dim0..]
-                    .iter_mut()
-                    .zip(other[j * other_dim1..].iter())
-                    .for_each(|(a, b)| *a += self[i * dim1 + j] * b);
-            }
-        }
-
-        result
-    }
-
-    pub fn outer(&self, other: &Tensor) -> Tensor {
-        let mut result = tensor!(0.0; self.numel(), other.numel());
-        for i in 0..self.numel() {
-            for j in 0..other.numel() {
-                result[i * other.numel() + j] = self[i] * other[j];
-            }
-        }
-        result
-    }
-
-    pub fn take(&self, index: &[usize]) -> Tensor {
-        let mut data = Vec::new();
-        data.resize(index.len(), 0.0);
-        for i in 0..index.len() {
-            data[i] = self[index[i]];
-        }
-        Tensor::raw(data, self.shape.to_vec())
-    }
-
-    pub fn diag(&self) -> Tensor {
-        assert!(
-            self.dim() >= 2,
-            "cannot extract diagonal from tensor with less than 2 dimensions"
-        );
-        let n = self.size(self.dim() - 1);
-        let m = self.size(self.dim() - 2);
-        let s = n.min(m);
-        let diags = self.numel() / (n * m);
-        let mut shape = self.shape.clone();
-        shape.pop();
-        *shape.last_mut().unwrap() = s;
-        let mut result = Tensor::zeros(&shape);
-        for d in 0..diags {
-            for i in 0..s {
-                result[d * s + i] = self[i * n + i];
-            }
-        }
-        result
     }
 
     pub fn reshape(&self, shape: &[usize]) -> Tensor {
@@ -425,6 +287,144 @@ impl Tensor {
         result
     }
 
+    pub fn matmul(&self, other: &Tensor) -> Tensor {
+        assert!(
+            self.dim() <= 2 && other.dim() <= 2,
+            "cannot matrix multiply matrices with more than 2 dimensions"
+        );
+        assert!(
+            self.dim() != 0 && other.dim() != 0,
+            "cannot matrix multiply matrices with zero dimensions"
+        );
+        let dim0 = if self.dim() == 1 {
+            1
+        } else {
+            self.size(self.dim() - 2)
+        };
+        let dim1 = self.size(self.dim() - 1);
+        let other_dim0 = if other.dim() == 1 {
+            1
+        } else {
+            other.size(other.dim() - 2)
+        };
+        let other_dim1 = other.size(other.dim() - 1);
+        assert!(
+            dim1 == other_dim0,
+            "cannot matrix multiply matrices with incompatible shapes ({}x{}) * ({}x{})",
+            dim0,
+            dim1,
+            other_dim0,
+            other_dim1,
+        );
+
+        let mut result = Tensor::zeros(&[dim0, other_dim1]);
+        for i in 0..dim0 {
+            for j in 0..dim1 {
+                result[i * dim1..][..other_dim1]
+                    .iter_mut()
+                    .zip(other[j * other_dim1..].iter())
+                    .for_each(|(a, b)| *a += self[i * dim1 + j] * b);
+            }
+        }
+
+        result
+    }
+
+    pub fn dot(&self, other: &Tensor) -> Tensor {
+        // TODO: Use broadcasting instead
+        assert!(
+            self.dim() != 0 && other.dim() != 0,
+            "cannot dot matrices with zero dimensions"
+        );
+        let dim0 = if self.dim() == 1 {
+            1
+        } else {
+            self.size(self.dim() - 2)
+        };
+        let dim1 = self.size(self.dim() - 1);
+        let other_dim0 = if other.dim() == 1 {
+            1
+        } else {
+            other.size(other.dim() - 2)
+        };
+        let other_dim1 = other.size(other.dim() - 1);
+        assert!(
+            (dim0 == other_dim0 || dim0 == 1 || other_dim0 == 1) && dim1 == other_dim1,
+            "cannot dot matrices with incompatible shapes ({}x{}) * ({}x{})",
+            dim0,
+            dim1,
+            other_dim0,
+            other_dim1,
+        );
+
+        let n = dim0.max(other_dim0);
+        let mut result = Tensor::zeros(&[n]);
+        if dim0 == other_dim0 {
+            for i in 0..n * dim1 {
+                result[i / dim1] += self[i] * other[i];
+            }
+        } else if dim0 == 1 {
+            for i in 0..n {
+                result[i] = other[i * dim1..][..dim1]
+                    .iter()
+                    .enumerate()
+                    .map(|(j, &x)| x * self[j])
+                    .sum();
+            }
+        } else {
+            for i in 0..n {
+                result[i] = self[i * dim1..][..dim1]
+                    .iter()
+                    .enumerate()
+                    .map(|(j, &x)| x * other[j])
+                    .sum();
+            }
+        }
+
+        result
+    }
+
+    pub fn outer(&self, other: &Tensor) -> Tensor {
+        let mut result = tensor!(0.0; self.numel(), other.numel());
+        for i in 0..self.numel() {
+            result[i * other.numel()..][..other.numel()]
+                .iter_mut()
+                .zip(other.iter())
+                .for_each(|(a, b)| *a = self[i] * b);
+        }
+        result
+    }
+
+    pub fn take(&self, index: &[usize]) -> Tensor {
+        let mut data = Vec::new();
+        data.resize(index.len(), 0.0);
+        for i in 0..index.len() {
+            data[i] = self[index[i]];
+        }
+        Tensor::raw(data, self.shape.to_vec())
+    }
+
+    pub fn diag(&self) -> Tensor {
+        assert!(
+            self.dim() >= 2,
+            "cannot extract diagonal from tensor with less than 2 dimensions"
+        );
+        let n = self.size(self.dim() - 1);
+        let m = self.size(self.dim() - 2);
+        let s = n.min(m);
+        let diags = self.numel() / (n * m);
+        let mut shape = self.shape.clone();
+        shape.pop();
+        *shape.last_mut().unwrap() = s;
+        let mut result = Tensor::zeros(&shape);
+        for d in 0..diags {
+            for i in 0..s {
+                result[d * s + i] = self[i * n + i];
+            }
+        }
+        result
+    }
+
     pub fn cat(&self, other: &Tensor, dim: usize) -> Tensor {
         let mut result = self.deep_clone();
         result.cat_(other, dim);
@@ -458,12 +458,6 @@ impl Tensor {
     pub fn fill(&mut self, value: f32) -> Tensor {
         let mut result = self.deep_clone();
         result.fill_(value);
-        result
-    }
-
-    pub fn set(&mut self, data: &[f32]) -> Tensor {
-        let mut result = self.deep_clone();
-        result.set_(data);
         result
     }
 
@@ -514,10 +508,6 @@ impl Tensor {
         self.shape = vec![self.numel()];
     }
 
-    pub fn matmul_(&mut self, other: &Tensor) {
-        *self = self.matmul(other);
-    }
-
     pub fn reshape_(&mut self, shape: &[usize]) {
         self.shape = shape.to_vec();
         let new_numel = shape.iter().product();
@@ -546,12 +536,12 @@ impl Tensor {
 
     pub fn resize_(&mut self, shape: &[usize], value: f32) {
         self.shape = shape.to_vec();
-        self.data_mut().resize(shape.iter().product(), value);
+        self.data.resize(shape.iter().product(), value);
     }
 
     pub fn resize_with_(&mut self, shape: &[usize], f: impl FnMut() -> f32) {
         self.shape = shape.to_vec();
-        self.data_mut().resize_with(shape.iter().product(), f);
+        self.data.resize_with(shape.iter().product(), f);
     }
 
     pub fn transpose_(&mut self, dim0: usize, dim1: usize) {
@@ -559,13 +549,23 @@ impl Tensor {
             self.shape.len() >= 2,
             "cannot transpose tensor with less than 2 dimensions"
         );
-        for i in 0..self.size(dim0) {
-            for j in 0..self.size(dim1) {
-                let idx = i * self.size(dim1) + j;
-                let idx_t = j * self.size(dim0) + i;
-                self[..].swap(idx, idx_t);
+        let n = self.size(dim0);
+        let m = self.size(dim1);
+        if n == m {
+            for i in 0..n {
+                for j in i + 1..m {
+                    self.data.swap(i * m + j, j * n + i);
+                }
             }
+        } else {
+            // TODO: slow, maybe use transposed strides instead
+            let data = self.data.clone();
+            self.data
+                .iter_mut()
+                .enumerate()
+                .for_each(|(i, x)| *x = data[(i % n) * m + i / n])
         }
+
         self.shape.swap(dim0, dim1);
     }
 
@@ -615,12 +615,12 @@ impl Tensor {
             other.size(dim),
             "cannot concatenate tensors with different dimensions"
         );
-        self.data_mut().extend_from_slice(&other[..]);
+        self.data.extend_from_slice(&other[..]);
         self.shape[dim] += other.size(dim);
     }
 
     pub fn broadcast_(&mut self, other_shape: &[usize]) {
-        // TODO: Fix this and use it for matmul/add/sub/div/mul
+        // TODO: Fix this and use it for matmul/add/sub/div/mul/dot
         if self.shape() == other_shape {
             return;
         }
@@ -657,7 +657,7 @@ impl Tensor {
             repeats.len() >= self.dim(),
             "repeat dimensions can not be smaller than tensor dimensions"
         );
-        *self.data_mut() = self[..].repeat(repeats.iter().product());
+        self.data = self[..].repeat(repeats.iter().product());
         if repeats.len() > self.dim() {
             let mut ones = vec![1usize; repeats.len() - self.dim()];
             ones.extend_from_slice(self.shape.as_slice());
@@ -685,26 +685,23 @@ impl Tensor {
 
     pub fn shuffle_at_(&mut self, dim: usize, rng: &mut Random) {
         let self_ptr = &mut self[..] as *mut [f32];
-        let size: usize = self.shape[dim + 1..].iter().product();
+        let size: usize = if dim + 1 < self.dim() {
+            self.shape[dim + 1..].iter().product()
+        } else {
+            1
+        };
         for i in 0..self.size(dim) {
             let j = rng.gen_range_u32(i as u32..self.size(dim) as u32) as usize;
             let a = &mut unsafe { &mut *self_ptr }[i * size..][..size];
             let b = &mut unsafe { &mut *self_ptr }[j * size..][..size];
-            a.swap_with_slice(b);
+            if i != j {
+                a.swap_with_slice(b);
+            }
         }
     }
 
     pub fn fill_(&mut self, value: f32) {
         self[..].fill(value);
-    }
-
-    pub fn set_(&mut self, data: &[f32]) {
-        assert_eq!(
-            data.len(),
-            self.numel(),
-            "data must have the same number of elements as the tensor"
-        );
-        self[..].copy_from_slice(data);
     }
 
     pub fn mul_(&mut self, other: &Tensor) {
@@ -789,7 +786,7 @@ impl<I: std::slice::SliceIndex<[f32]>> ops::Index<I> for Tensor {
 
 impl<I: std::slice::SliceIndex<[f32]>> ops::IndexMut<I> for Tensor {
     fn index_mut(&mut self, index: I) -> &mut Self::Output {
-        &mut self.data_mut()[index]
+        &mut self.data[index]
     }
 }
 
@@ -1144,6 +1141,14 @@ impl ops::DivAssign<&Tensor> for Tensor {
     }
 }
 
+impl PartialEq for Tensor {
+    fn eq(&self, other: &Self) -> bool {
+        self.shape == other.shape && self.data == other.data
+    }
+}
+
+impl Eq for Tensor {}
+
 impl fmt::Display for Tensor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:?}", self)
@@ -1192,5 +1197,211 @@ impl fmt::Debug for Tensor {
         }
 
         f.write_str(&vals(self, 0, 0, f))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rand;
+
+    macro_rules! assert_approx_eq {
+        ($a: expr, $b: expr, $($message:tt)+) => {
+            let a: Vec<f32> = $a.iter_mut().map(|x| (*x * 1e6f32).round() / 1e6).collect();
+            let b: Vec<f32> = $b.iter_mut().map(|x| (*x * 1e6f32).round() / 1e6).collect();
+            assert_eq!(a, b, $message);
+        };
+        ($a: expr, $b: expr) => {
+            let a: Vec<f32> = $a.iter_mut().map(|x| (*x * 1e6f32).round() / 1e6).collect();
+            let b: Vec<f32> = $b.iter_mut().map(|x| (*x * 1e6f32).round() / 1e6).collect();
+            assert_eq!(a, b);
+        };
+    }
+
+    #[test]
+    fn init_macro() {
+        assert_eq!(tensor![3.0][..], [3.0]);
+        assert_eq!(tensor![5.0; 3][..], [5.0, 5.0, 5.0]);
+        assert_eq!(tensor![2.0; 3, 2][..], [2.0, 2.0, 2.0, 2.0, 2.0, 2.0]);
+        assert_eq!(tensor![2.0; 3, 2].shape(), [3, 2]);
+        assert_eq!(tensor![0.0, 1.0, 2.0][..], [0.0, 1.0, 2.0]);
+        assert_eq!(
+            tensor![[3.0, 2.0], [4.0, 5.0], [7.0, 1.0]][..],
+            [3.0, 2.0, 4.0, 5.0, 7.0, 1.0]
+        );
+        assert_eq!(tensor![[[3.0, 4.0], [2.0, 1.0]]][..], [3.0, 4.0, 2.0, 1.0]);
+        assert_eq!(tensor![[[3.0, 4.0], [2.0, 1.0]]].shape(), [1, 2, 2]);
+        assert_eq!(
+            tensor![[[[1.0], [4.0]], [[3.0], [2.0]]]].shape(),
+            [1, 2, 2, 1]
+        );
+        assert_eq!(tensor![[3.0, 2.0], [4.0, 5.0], [7.0, 1.0]].shape(), [3, 2]);
+    }
+
+    #[test]
+    fn equality() {
+        assert_eq!(tensor![4.0, 6.0, 3.0], tensor![4.0, 6.0, 3.0]);
+        assert_ne!(tensor![0.0, 1.0], tensor![0.0, 1.4]);
+    }
+
+    #[test]
+    fn init() {
+        assert_eq!(Tensor::new(&[3.0, 2.0], &[2])[..], [3.0, 2.0]);
+        assert_eq!(Tensor::array(&[3.0, 2.0])[..], [3.0, 2.0]);
+        assert_eq!(
+            Tensor::matrix(&[[3.0, 2.0], [4.0, 5.0]])[..],
+            [3.0, 2.0, 4.0, 5.0]
+        );
+        assert_eq!(
+            Tensor::matrix(&[[3.0, 2.0], [7.0, 6.0], [4.0, 5.0]]).shape(),
+            [3, 2]
+        );
+
+        assert_eq!(Tensor::zeros(&[3, 2])[..], [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+        assert_eq!(Tensor::ones(&[3, 2])[..], [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]);
+
+        let seed = 518012623;
+        let mut r = rand::Random::from_seed(seed);
+        let rands: Vec<f32> = (0..6).into_iter().map(|_| r.gen()).collect();
+        rand::set_seed(seed);
+        assert_eq!(&Tensor::rand(&[3, 2])[..], &rands);
+
+        let seed = r.seed();
+        let rands: Vec<f32> = (0..6).into_iter().map(|_| r.norm()).collect();
+        rand::set_seed(seed);
+        assert_eq!(&Tensor::randn(&[2, 3])[..], &rands);
+
+        assert_approx_eq!(Tensor::arange(0.0, 3.0, 1.0)[..], [0.0, 1.0, 2.0]);
+        assert_approx_eq!(Tensor::arange(0.1, 2.8, 1.0)[..], [0.1, 1.1, 2.1]);
+        assert_approx_eq!(
+            Tensor::arange(-1.3, 1.0, 0.6),
+            tensor![-1.3, -0.7, -0.1, 0.5]
+        );
+        assert_approx_eq!(Tensor::linspace(0.0, 3.0, 3)[..], [0.0, 1.5, 3.0]);
+        assert_approx_eq!(Tensor::linspace(0.1, 2.8, 4)[..], [0.1, 1.0, 1.9, 2.8]);
+        assert_approx_eq!(
+            Tensor::linspace(-1.4, 1.0, 7),
+            tensor![-1.4, -1.0, -0.6, -0.2, 0.2, 0.6, 1.0]
+        );
+
+        assert_eq!(
+            Tensor::eye(3, 4),
+            tensor![[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0]]
+        );
+        assert_eq!(
+            Tensor::identity(3),
+            tensor![[1, 0, 0], [0, 1, 0], [0, 0, 1,]]
+        );
+
+        assert_eq!(Tensor::splat(&[1, 2], 2.0)[..], [2.0, 2.0]);
+        let mut count = 0.0;
+        assert_eq!(
+            Tensor::splat_with(&[3, 2], || {
+                count += 1.0;
+                count
+            })[..],
+            [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+        );
+    }
+
+    #[test]
+    fn memory() {
+        let a = Tensor::array(&[3.0, 2.0]);
+        let b = a.deep_clone();
+        assert!(!std::ptr::addr_eq(
+            std::ptr::addr_of!(a.data),
+            std::ptr::addr_of!(b.data)
+        ));
+    }
+
+    #[test]
+    fn metadata() {
+        assert_eq!(tensor![3.0, 2.0].shape(), &[2]);
+        assert_eq!(tensor![[3.0, 2.0, 0.0], [4.0, 5.0, 1.0]].shape(), &[2, 3]);
+        assert_eq!(tensor![[3.0], [2.0]].size(0), 2);
+        assert_eq!(tensor![[3.0], [2.0]].size(1), 1);
+        assert_eq!(tensor![[[3.0]], [[2.0]]].dim(), 3);
+        assert_eq!(tensor![[3.0, 2.0, 0.0], [4.0, 5.0, 1.0]].numel(), 6);
+    }
+
+    #[test]
+    fn slicing() {
+        assert_eq!(
+            tensor![[3.0, 2.0, 0.0], [4.0, 5.0, 1.0]].idx(1),
+            tensor![4.0, 5.0, 1.0]
+        );
+        assert_eq!(
+            tensor![[3.0, 2.0, 0.0], [4.0, 5.0, 1.0]].idx(1).idx(2),
+            tensor![1.0]
+        );
+        assert_eq!(tensor![[3.0, 2.0, 0.0], [4.0, 5.0, 1.0]].idx(1).dim(), 1);
+        assert_eq!(tensor![[3.0, 2.0, 0.0], [4.0, 5.0, 1.0]].idx(1).numel(), 3);
+        assert_eq!(
+            tensor![[3.0, 2.0, 0.0], [4.0, 5.0, 1.0]].idx(1).shape(),
+            &[3]
+        );
+
+        assert_eq!(
+            tensor![[3.0, 2.0], [0.0, 1.0], [4.0, 5.0]].slice(1..3),
+            tensor![[0.0, 1.0], [4.0, 5.0]]
+        );
+        assert_eq!(
+            tensor![[3.0, 2.0], [0.0, 1.0], [4.0, 5.0]]
+                .slice(1..2)
+                .shape(),
+            [1, 2]
+        );
+
+        assert_eq!(
+            tensor![[3.0, 2.0], [0.0, 1.0], [4.0, 5.0]].at(&[2, 1]),
+            tensor![5.0]
+        );
+
+        assert_eq!(
+            tensor![[3.0, 2.0], [0.0, 1.0], [4.0, 5.0]].get(&[2, 1]),
+            5.0
+        );
+        assert_approx_eq!(tensor![3.0, 2.0].iter().collect::<Vec<_>>(), [3.0, 2.0]);
+        assert_approx_eq!(
+            tensor![3.0, 2.0].into_iter().collect::<Vec<_>>(),
+            [3.0, 2.0]
+        );
+    }
+
+    #[test]
+    fn transpose() {
+        assert_eq!(
+            tensor![[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]].t(),
+            tensor![[1.0, 4.0, 7.0], [2.0, 5.0, 8.0], [3.0, 6.0, 9.0]]
+        );
+        assert_eq!(
+            tensor![[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]].t(),
+            tensor![[1.0, 4.0], [2.0, 5.0], [3.0, 6.0]]
+        );
+        assert_eq!(
+            tensor![[1.0, 4.0], [2.0, 5.0], [3.0, 6.0]].t(),
+            tensor![[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]
+        );
+    }
+
+    #[test]
+    fn matmul() {
+        let a = tensor![[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]];
+        let b = tensor![[1.0, 2.0], [3.0, 4.0]];
+        assert_approx_eq!(
+            a.matmul(&b),
+            tensor![[7.0, 10.0], [15.0, 22.0], [23.0, 34.0]]
+        );
+
+        // TODO: implement broadcasting first
+        // let a = tensor![
+        //     [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]],
+        //     [[2.0, 2.0], [6.0, 4.0], [10.0, 6.0]]
+        // ];
+        // let b = tensor![[1.0, 2.0], [3.0, 4.0]];
+        // assert_approx_eq!(
+        //     a.matmul(&b),
+        //     tensor![[8.0, 12.0], [18.0, 28.0], [28.0, 44.0]]
+        // );
     }
 }

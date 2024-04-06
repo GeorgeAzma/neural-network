@@ -52,8 +52,8 @@ impl Model {
     }
 
     pub fn forward(&self, inputs: &Tensor) -> Tensor {
-        let mut inputs = inputs.to_owned();
-        for layer in self.layers.iter() {
+        let mut inputs = self.layers[0].forward(inputs);
+        for layer in self.layers[1..].iter() {
             inputs = layer.forward(&inputs);
         }
         inputs
@@ -88,7 +88,7 @@ impl Model {
             }
         }
 
-        output.last().unwrap().to_owned()
+        output.last().unwrap().deep_clone()
     }
 
     pub fn update(&mut self, learning_rate: f32) {
