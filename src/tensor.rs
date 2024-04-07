@@ -6,23 +6,15 @@ use std::ops::{Bound, RangeBounds};
 
 #[macro_export]
 macro_rules! tensor {
-    ($x: literal) => {
-        Tensor::array(&[$x as f32])
-    };
-
     ($x: literal; $n: literal) => {
         Tensor::splat(&[$n as usize], $x as f32)
     };
 
-    ($value:expr; $($dim:expr),*) => {{
+    ($value: literal; $($dim: expr),*) => {{
         let shape = vec![$($dim),*];
         let data = vec![$value; shape.iter().product::<usize>()];
         Tensor::raw(data, shape)
     }};
-
-    [$($x: literal), *] => {
-        Tensor::array(&[$($x as f32),*])
-    };
 
     ($([$([$([$($x:expr),* $(,)*]),* $(,)*]),+ $(,)*]),+ $(,)*) => {{
         let data = vec![$([$([$([$($x,)*],)*],)*],)*];
@@ -48,6 +40,10 @@ macro_rules! tensor {
         let dim1 = if dim0 > 0 { data[0].len() } else { 0 };
         Tensor::raw(data.into_iter().flatten().map(|x| x as f32).collect(), vec![dim0, dim1])
     }};
+
+    [$($x: expr), + $(,)?] => {
+        Tensor::array(&[$($x as f32),*])
+    };
 }
 
 #[derive(Clone, Default)]
@@ -1202,6 +1198,20 @@ impl fmt::Debug for Tensor {
 
         f.write_str(&vals(self, 0, 0, f))
     }
+}
+
+#[derive(Clone)]
+struct Dependency {
+    tensor: TensorGrad,
+    grad_fn: fn(&Tensor) -> Tensor,
+}
+
+#[derive(Clone)]
+struct TensorGrad {
+    tensor: Tensor,
+    grad: Vec<f32>,
+    deps: Vec<Dependency>,
+    requires_grad: bool,
 }
 
 #[cfg(test)]
