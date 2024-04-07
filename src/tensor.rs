@@ -159,6 +159,10 @@ impl Tensor {
         self.data.len()
     }
 
+    pub fn empty(&self) -> bool {
+        self.numel() == 0
+    }
+
     pub fn idx(&self, index: usize) -> Tensor {
         let m = self.numel() / self.size(0);
         Self::new(
