@@ -1404,4 +1404,19 @@ mod tests {
         //     tensor![[8.0, 12.0], [18.0, 28.0], [28.0, 44.0]]
         // );
     }
+
+    #[test]
+    fn dot() {
+        let a = tensor![1.0, 2.0];
+        let b = tensor![3.0, 4.0];
+        assert_approx_eq!(a.dot(&b), [11.0]);
+
+        let a = tensor![[1.0, 2.0], [3.0, 4.0]];
+        let b = tensor![3.0, 4.0];
+        assert_approx_eq!(a.dot(&b), [11.0, 25.0]);
+
+        let a = tensor![[1.0, 2.0], [3.0, 4.0]];
+        let b = tensor![[3.0, 4.0], [5.0, 2.0]];
+        assert_approx_eq!(a.dot(&b), [11.0, 23.0]);
+    }
 }
