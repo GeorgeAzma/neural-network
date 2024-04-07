@@ -1200,20 +1200,6 @@ impl fmt::Debug for Tensor {
     }
 }
 
-#[derive(Clone)]
-struct Dependency {
-    tensor: TensorGrad,
-    grad_fn: fn(&Tensor) -> Tensor,
-}
-
-#[derive(Clone)]
-struct TensorGrad {
-    tensor: Tensor,
-    grad: Vec<f32>,
-    deps: Vec<Dependency>,
-    requires_grad: bool,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
