@@ -6,8 +6,8 @@ use std::ops::{Bound, RangeBounds};
 
 #[macro_export]
 macro_rules! tensor {
-    (x: literal) => {
-        Tensor::array(&[x as f32])
+    ($x: literal) => {
+        Tensor::array(&[$x as f32])
     };
 
     ($x: literal; $n: literal) => {
