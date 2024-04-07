@@ -20,8 +20,10 @@ fn main() {
     let (mut train, test) = dataset.split_train_test_size_unbatched(dataset.batches() - 1);
 
     let mut model = Model::new();
-    model.add_layer(Layer::lin(train.input_size(), 8));
-    model.add_layer(Layer::Gelu);
+    model.add_layer(Layer::lin(train.input_size(), 16));
+    model.add_layer(Layer::Tanh);
+    model.add_layer(Layer::lin_out(32));
+    model.add_layer(Layer::Tanh);
     model.add_layer(Layer::lin_out(train.target_size()));
 
     for epoch in 0..32 {
